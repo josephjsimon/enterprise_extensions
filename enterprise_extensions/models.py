@@ -131,6 +131,20 @@ def se_dm_kernel(avetoas, log10_sigma=-7, log10_ell=2):
     K = sigma**2 * np.exp(-r**2/2/l**2) + d
     return K
 
+# rational-quadratic kernel for DM
+@signal_base.function
+def rq_kernel(avetoas, log10_sigma=-7, log10_ell=2, log10_alpha_wgt=0):
+    
+    r = np.abs(avetoas[None, :] - avetoas[:, None])
+    
+    # Convert everything into seconds
+    l = 10**log10_ell * 86400
+    sigma = 10**log10_sigma
+    alpha_wgt = 10**log10_alpha_wgt
+    d = np.eye(r.shape[0]) * (sigma/500)**2
+    K = sigma**2 * (1+r**2/2/alpha_wgt/l**2)**(-alpha_wgt) + d
+    return K
+
 # quantization matrix in time and radio frequency to cut down on the kernel size.
 @signal_base.function
 def get_tf_quantization_matrix(toas, freqs, dt=30*86400, df=None, dm=False, dm_idx=2):
@@ -1285,7 +1299,7 @@ def red_noise_block(psd='powerlaw', prior='log-uniform', Tspan=None,
 
 def dm_noise_block(gp_kernel='diag', psd='powerlaw', nondiag_kernel='periodic',
                    prior='log-uniform', Tspan=None, components=30, gamma_val=None,
-                   coefficients=False):
+                   coefficients=False, dt_basis=15):
     """
     Returns DM noise model:
 
@@ -1304,6 +1318,9 @@ def dm_noise_block(gp_kernel='diag', psd='powerlaw', nondiag_kernel='periodic',
     :param gamma_val:
         If given, this is the fixed slope of the power-law for
         powerlaw, turnover, or tprocess DM-variations
+    :param dt:
+        The delta_t spacing [in days] for DM kernels which utilize either
+        the linear_interpolation_basis or the tf_quantization_matrix
     """
     # dm noise parameters that are common
     if gp_kernel == 'diag':
@@ -1362,7 +1379,7 @@ def dm_noise_block(gp_kernel='diag', psd='powerlaw', nondiag_kernel='periodic',
             log10_p = parameter.Uniform(-4, 1)
             log10_gam_p = parameter.Uniform(-3, 2)
 
-            dm_basis = linear_interp_basis_dm(dt=15*86400)
+            dm_basis = linear_interp_basis_dm(dt=dt_basis*86400)
             dm_prior = periodic_kernel(log10_sigma=log10_sigma, log10_ell=log10_ell, 
                                        log10_gam_p=log10_gam_p, log10_p=log10_p)
         elif nondiag_kernel == 'periodic_rfband':
@@ -1374,7 +1391,7 @@ def dm_noise_block(gp_kernel='diag', psd='powerlaw', nondiag_kernel='periodic',
             log10_p = parameter.Uniform(-4, 1)
             log10_gam_p = parameter.Uniform(-3, 2)
             
-            dm_basis = get_tf_quantization_matrix(df=200, dt=15*86400, dm=True)
+            dm_basis = get_tf_quantization_matrix(df=200, dt=dt_basis*86400, dm=True)
             dm_prior = tf_kernel(log10_sigma=log10_sigma, log10_ell=log10_ell,
                                  log10_gam_p=log10_gam_p, log10_p=log10_p, 
                                  log10_alpha_wgt=log10_alpha_wgt, log10_ell2=log10_ell2)
@@ -1383,7 +1400,7 @@ def dm_noise_block(gp_kernel='diag', psd='powerlaw', nondiag_kernel='periodic',
             log10_sigma = parameter.Uniform(-10, -4)
             log10_ell = parameter.Uniform(1, 4)
             
-            dm_basis = linear_interp_basis_dm(dt=15*86400)
+            dm_basis = linear_interp_basis_dm(dt=dt_basis*86400)
             dm_prior = se_dm_kernel(log10_sigma=log10_sigma, log10_ell=log10_ell)
         elif nondiag_kernel == 'sq_exp_rfband':
             # Sq-Exp GP kernel for DM with RQ radio-frequency dependence
@@ -1392,14 +1409,14 @@ def dm_noise_block(gp_kernel='diag', psd='powerlaw', nondiag_kernel='periodic',
             log10_ell2 = parameter.Uniform(2, 7)
             log10_alpha_wgt = parameter.Uniform(-4, 1)
             
-            dm_basis = get_tf_quantization_matrix(df=200, dt=15*86400, dm=True)
+            dm_basis = get_tf_quantization_matrix(df=200, dt=dt_basis*86400, dm=True)
             dm_prior = sf_kernel(log10_sigma=log10_sigma, log10_ell=log10_ell,
                                  log10_alpha_wgt=log10_alpha_wgt, log10_ell2=log10_ell2)
         elif nondiag_kernel == 'dmx_like':
             # DMX-like signal
             log10_sigma = parameter.Uniform(-10, -4)
 
-            dm_basis = linear_interp_basis_dm(dt=30*86400)
+            dm_basis = linear_interp_basis_dm(dt=dt_basis*86400)
             dm_prior = dmx_ridge_prior(log10_sigma=log10_sigma)
 
     dmgp = gp_signals.BasisGP(dm_prior, dm_basis, name='dm_gp',
@@ -1407,62 +1424,44 @@ def dm_noise_block(gp_kernel='diag', psd='powerlaw', nondiag_kernel='periodic',
 
     return dmgp
 
-def scattering_noise_block(kernel='periodic', coefficients=False):
+def scattering_noise_block(kernel='periodic', coefficients=False, dt_basis=15):
     """
     Returns Scattering noise model:
-
-        1. Scattering noise modeled as a power-law with 30 sampling frequencies
-
-    :param psd:
-        PSD function [e.g. powerlaw (default), spectrum, tprocess]
-    :param prior:
-        Prior on log10_A. Default if "log-uniform". Use "uniform" for
-        upper limits.
-    :param Tspan:
-        Sets frequency sampling f_i = i / Tspan. Default will
-        use overall time span for indivicual pulsar.
-    :param components:
-        Number of frequencies in sampling of DM-variations.
-    :param gamma_val:
-        If given, this is the fixed slope of the power-law for
-        powerlaw, turnover, or tprocess DM-variations
     """
     #gp_kernel == 'nondiag':
     if kernel == 'periodic':
-        # Periodic GP kernel for DM
+        # Periodic GP kernel for Scattering
         log10_sigma = parameter.Uniform(-10, -4)
         log10_ell = parameter.Uniform(1, 4)
         log10_p = parameter.Uniform(-4, 1)
         log10_gam_p = parameter.Uniform(-3, 2)
 
-        dm_basis = linear_interp_basis_scattering(dt=15*86400)
-        dm_prior = periodic_kernel(log10_sigma=log10_sigma, log10_ell=log10_ell, 
+        sc_basis = linear_interp_basis_scattering(dt=dt_basis*86400)
+        sc_prior = periodic_kernel(log10_sigma=log10_sigma, log10_ell=log10_ell, 
                                    log10_gam_p=log10_gam_p, log10_p=log10_p)
-    elif kernel == 'periodic_rfband':
-        # Periodic GP kernel for DM with RQ radio-frequency dependence
+        
+    elif kernel == 'rational_quadratic':
+        # Rational Quadratic kernel for Scattering
         log10_sigma = parameter.Uniform(-10, -4)
         log10_ell = parameter.Uniform(1, 4)
-        log10_ell2 = parameter.Uniform(2, 7)
         log10_alpha_wgt = parameter.Uniform(-4, 1)
-        log10_p = parameter.Uniform(-4, 1)
-        log10_gam_p = parameter.Uniform(-3, 2)
+        
+        sc_basis = linear_interp_basis_scattering(dt=dt_basis*86400)
+        sc_prior = rq_kernel(log10_sigma=log10_sigma, log10_ell=log10_ell, 
+                             log10_alpha_wgt)
 
-        dm_basis = get_tf_quantization_matrix(df=200, dt=15*86400, dm=True, idx=4)
-        dm_prior = tf_kernel(log10_sigma=log10_sigma, log10_ell=log10_ell,
-                             log10_gam_p=log10_gam_p, log10_p=log10_p, 
-                             log10_alpha_wgt=log10_alpha_wgt, log10_ell2=log10_ell2)
     elif kernel == 'sq_exp':
-        # squared-exponential kernel for DM
+        # squared-exponential kernel for Scattering
         log10_sigma = parameter.Uniform(-10, -4)
         log10_ell = parameter.Uniform(1, 4)
 
-        dm_basis = linear_interp_basis_scattering(dt=15*86400)
-        dm_prior = se_dm_kernel(log10_sigma=log10_sigma, log10_ell=log10_ell)
+        sc_basis = linear_interp_basis_scattering(dt=dt_basis*86400)
+        sc_prior = se_dm_kernel(log10_sigma=log10_sigma, log10_ell=log10_ell)
 
-    dmgp = gp_signals.BasisGP(dm_prior, dm_basis, name='scattering_gp',
+    scgp = gp_signals.BasisGP(sc_prior, sc_basis, name='scattering_gp',
                               coefficients=coefficients)
 
-    return dmgp
+    return scgp
 
 def dm_annual_signal(idx=2, name='dm_s1yr'):
     """
