@@ -1448,7 +1448,7 @@ def scattering_noise_block(kernel='periodic', coefficients=False, dt_basis=15):
         
         sc_basis = linear_interp_basis_scattering(dt=dt_basis*86400)
         sc_prior = rq_kernel(log10_sigma=log10_sigma, log10_ell=log10_ell, 
-                             log10_alpha_wgt)
+                             log10_alpha_wgt=log10_alpha_wgt)
 
     elif kernel == 'sq_exp':
         # squared-exponential kernel for Scattering
